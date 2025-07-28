@@ -1,5 +1,5 @@
 import requests
-from config import AZURE_OPENAI_API_KEY
+from ai_task_manager.config import AZURE_OPENAI_API_KEY
 
 # Use the user-supplied endpoint for chat completions
 AZURE_OPENAI_CHAT_ENDPOINT = "https://kidus-mafuwv4a-eastus2.openai.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview"

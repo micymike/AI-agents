@@ -1,8 +1,9 @@
-from azure_openai import ask_openai
+from ai_task_manager.azure_openai import ask_openai
 import json
 from datetime import datetime, timedelta
 import sqlite3
 import os
+from typing import Dict, List, Any, Optional
 
 # In-memory data structures
 tasks = []

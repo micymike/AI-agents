@@ -12,9 +12,17 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QDate, QTime, QDateTime
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QPainter
 import speech_recognition as sr
-from gtts import gTTS
-import pygame
+import threading
+import asyncio
+import edge_tts
 import tempfile
+import sounddevice as sd
+import soundfile as sf
+import pygame
+import requests
+import tempfile
+import shutil
+import subprocess
 
 try:
     import matplotlib.pyplot as plt
@@ -328,12 +336,19 @@ class ScheduleDialog(QDialog):
         }
 
 class ModernAssistantGUI(QMainWindow):
+    UPDATE_URL = "https://your-server.com/assistant/version.json"  # <-- Set this to your version.json URL
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Moses - AI Personal Assistant")
         self.setGeometry(100, 100, 1400, 900)
         self.is_awake = False
         self.is_muted = False
+
+        # Set app icon if available
+        icon_path = os.path.join(os.path.dirname(__file__), "assets", "app_icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         # Initialize pygame for TTS
         pygame.mixer.init()
@@ -341,6 +356,9 @@ class ModernAssistantGUI(QMainWindow):
         # Setup UI
         self.setup_ui()
         self.setup_timers()
+
+        # Check for updates (after UI is initialized)
+        self.check_for_updates()
         
         # Start wake word listener
         self.start_wake_word_listener()
@@ -846,22 +864,47 @@ class ModernAssistantGUI(QMainWindow):
         self.add_debug_message(f"🔊 Audio {status}")
 
     def speak(self, text):
-        """Text-to-speech functionality"""
+        """Text-to-speech functionality using edge-tts (Microsoft neural voices)"""
         if not self.is_muted:
-            try:
-                tts = gTTS(text=text, lang="en", tld="co.uk")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                    temp_path = fp.name
-                tts.save(temp_path)
-                
-                pygame.mixer.music.load(temp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    pygame.time.Clock().tick(10)
-                pygame.mixer.music.unload()
-                os.remove(temp_path)
-            except Exception as e:
-                self.add_debug_message(f"🔊 TTS Error: {e}")
+            self.stop_speaking()
+            def tts_worker():
+                try:
+                    voice = "en-US-JennyNeural"  # You can change to any supported voice
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                        temp_path = fp.name
+                    # Synthesize speech to file using edge-tts
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(
+                        edge_tts.Communicate(text, voice).save(temp_path)
+                    )
+                    # Play the audio file using sounddevice
+                    data, samplerate = sf.read(temp_path)
+                    self._tts_playback = True
+                    sd.play(data, samplerate)
+                    sd.wait()
+                    self._tts_playback = False
+                except Exception as e:
+                    self.add_debug_message(f"🔊 TTS Error: {e}")
+                finally:
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+            self._tts_thread = threading.Thread(target=tts_worker, daemon=True)
+            self._tts_thread.start()
+
+    def stop_speaking(self):
+        """Interrupt TTS playback if speaking"""
+        try:
+            if hasattr(self, "_tts_playback") and self._tts_playback:
+                sd.stop()
+                self._tts_playback = False
+        except Exception:
+            pass
+        if hasattr(self, "_tts_thread") and self._tts_thread.is_alive():
+            # Thread will exit after playback is stopped
+            pass
 
     def start_voice_recording(self):
         """Start voice input recording"""
@@ -885,13 +928,21 @@ class ModernAssistantGUI(QMainWindow):
             self.add_chat_message("You (Voice)", text)
             if self.is_awake:
                 self.process_voice_command(text)
+            # Always-on voice: restart listening if awake and not muted
+            if self.is_awake and not self.is_muted:
+                QTimer.singleShot(500, self.start_voice_recording)
 
     def handle_speech_error(self, error_msg):
         """Handle speech recognition error"""
         self.add_chat_message("System", error_msg)
+        # Always-on voice: restart listening if awake and not muted
+        if self.is_awake and not self.is_muted:
+            QTimer.singleShot(500, self.start_voice_recording)
 
     def process_voice_command(self, text):
         """Process voice commands with enhanced AI"""
+        # Interrupt TTS if user speaks
+        self.stop_speaking()
         text_lower = text.lower()
         
         # Check for specific commands first
@@ -921,7 +972,20 @@ class ModernAssistantGUI(QMainWindow):
         if sender == "System":
             self.chat_display.append(f"<span style='color: #6c757d;'>[{timestamp}] <i>{message}</i></span>")
         elif sender == "Assistant":
-            self.chat_display.append(f"<span style='color: #007bff;'><b>[{timestamp}] Moses:</b> {message}</span>")
+            # Use mimo.jpg as the assistant's avatar, styled as a circle
+            avatar_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mimo.jpg"))
+            avatar_url = f"file:///{avatar_path.replace(os.sep, '/')}"
+            self.chat_display.append(
+                f"""
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                    <img src="{avatar_url}" style="width:40px; height:40px; border-radius:50%; object-fit:cover; margin-right:12px; border:2px solid #007bff; box-shadow:0 2px 8px #007bff22;">
+                    <div>
+                        <span style='color: #007bff; font-weight:bold;'>[{timestamp}] Moses:</span>
+                        <span style='color: #222;'>{message}</span>
+                    </div>
+                </div>
+                """
+            )
         else:
             self.chat_display.append(f"<span style='color: #28a745;'><b>[{timestamp}] {sender}:</b> {message}</span>")
 
@@ -1273,6 +1337,52 @@ Focus on productivity, financial health, and time management. Be encouraging and
             self.wake_word_thread.stop()
             self.wake_word_thread.wait()
         event.accept()
+
+    def check_for_updates(self):
+        """Check for app updates from remote server"""
+        try:
+            resp = requests.get(self.UPDATE_URL, timeout=5)
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            latest_version = data.get("version")
+            download_url = data.get("download_url")
+            if not latest_version or not download_url:
+                return
+            current_version = "1.0.0"  # <-- Set your app version here
+            if self.is_newer_version(latest_version, current_version):
+                reply = QMessageBox.question(
+                    self, "Update Available",
+                    f"A new version ({latest_version}) is available. Download and install now?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    self.download_and_install_update(download_url)
+        except Exception as e:
+            self.add_debug_message(f"Update check failed: {e}")
+
+    def is_newer_version(self, latest, current):
+        """Compare semantic version strings"""
+        def parse(v): return [int(x) for x in v.split(".")]
+        return parse(latest) > parse(current)
+
+    def download_and_install_update(self, url):
+        """Download new exe and launch it"""
+        try:
+            self.add_debug_message("Downloading update...")
+            r = requests.get(url, stream=True, timeout=30)
+            if r.status_code != 200:
+                self.add_debug_message("Failed to download update.")
+                return
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".exe") as f:
+                shutil.copyfileobj(r.raw, f)
+                new_exe = f.name
+            self.add_debug_message("Launching new version...")
+            subprocess.Popen([new_exe])
+            QMessageBox.information(self, "Update", "The new version will now launch. Please close this window.")
+            QApplication.quit()
+        except Exception as e:
+            self.add_debug_message(f"Update failed: {e}")
 
 # Keep the old class name for compatibility
 AssistantGUI = ModernAssistantGUI
