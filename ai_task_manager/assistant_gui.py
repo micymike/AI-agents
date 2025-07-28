@@ -104,6 +104,7 @@ class SpeechRecognitionThread(QThread):
             self.error.emit(f"🚫 Speech recognition error: {e}")
 
 class BudgetChartWidget(QWidget):
+    
     def __init__(self):
         super().__init__()
         if MATPLOTLIB_AVAILABLE:

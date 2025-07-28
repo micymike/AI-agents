@@ -1,3 +1,24 @@
 .env
 *.pyc
 __pycache__
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Database files
+*.db
+
+# Log files
+*.log
+
+# VSCode settings
+.vscode/
+
+# Generated icon and script
+mimo.jpg
+generate_lightbulb_icon.py
+
+# Ignore all .ico files (if not source assets)
+*.ico
